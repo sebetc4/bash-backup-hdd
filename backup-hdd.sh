@@ -16,7 +16,6 @@ EOF
     exit 1
 }
 
-# Parse command line options
 no_delete=false
 no_progress=false
 while [[ $# -gt 0 ]]; do
@@ -57,7 +56,6 @@ if ! command -v yq &> /dev/null; then
     exit 1
 fi
 
-# Validate drive option
 if [ -z "$drive" ]; then
     drive="both"
 fi
@@ -67,7 +65,6 @@ if [ "$drive" != "1" ] && [ "$drive" != "2" ] && [ "$drive" != "both" ]; then
     exit 1
 fi
 
-# Load configuration file
 config_file="${config_file:-$default_config_file}"
 
 if [ ! -f "$config_file" ]; then
@@ -78,8 +75,6 @@ fi
 source_dir=$(yq e '.source.dir' "$config_file")
 backup_dir1=$(yq e '.backup_drive_1.dir' "$config_file")
 backup_dir2=$(yq e '.backup_drive_2.dir' "$config_file")
-folders_to_backup1=$(yq e '.backup_drive_1.folders[]' "$config_file" | tr '\n' ' ')
-folders_to_backup2=$(yq e '.backup_drive_2.folders[]' "$config_file" | tr '\n' ' ')
 
 validate_paths() {
     local path=$1
@@ -126,21 +121,45 @@ Source drive:
 EOF
 
     if [ "$drive" = "1" ] || [ "$drive" = "both" ]; then
-        cat <<EOF
-Backup drive 1: 
-    path: $backup_dir1
-    directories to backup: $folders_to_backup1
-
-EOF
+        echo "Backup drive 1: "
+        echo "    path: $backup_dir1"
+        echo "    directories to backup: "
+        
+        folder_count=$(yq e '.backup_drive_1.folders | length' "$config_file")
+        for ((i=0; i<folder_count; i++)); do
+            folder_path=$(yq e ".backup_drive_1.folders[$i].path" "$config_file")
+            echo "        - $folder_path"
+            
+            if yq e ".backup_drive_1.folders[$i].subfolders" "$config_file" &> /dev/null; then
+                subfolder_count=$(yq e ".backup_drive_1.folders[$i].subfolders | length" "$config_file")
+                for ((j=0; j<subfolder_count; j++)); do
+                    subfolder=$(yq e ".backup_drive_1.folders[$i].subfolders[$j]" "$config_file")
+                    echo "            - $subfolder"
+                done
+            fi
+        done
+        echo
     fi
 
     if [ "$drive" = "2" ] || [ "$drive" = "both" ]; then
-        cat <<EOF
-Backup drive 2: 
-    path: $backup_dir2
-    directories to backup: $folders_to_backup2
-
-EOF
+        echo "Backup drive 2: "
+        echo "    path: $backup_dir2"
+        echo "    directories to backup: "
+        
+        folder_count=$(yq e '.backup_drive_2.folders | length' "$config_file")
+        for ((i=0; i<folder_count; i++)); do
+            folder_path=$(yq e ".backup_drive_2.folders[$i].path" "$config_file")
+            echo "        - $folder_path"
+            
+            if yq e ".backup_drive_2.folders[$i].subfolders" "$config_file" &> /dev/null; then
+                subfolder_count=$(yq e ".backup_drive_2.folders[$i].subfolders | length" "$config_file")
+                for ((j=0; j<subfolder_count; j++)); do
+                    subfolder=$(yq e ".backup_drive_2.folders[$i].subfolders[$j]" "$config_file")
+                    echo "            - $subfolder"
+                done
+            fi
+        done
+        echo
     fi
 
     if [ "$no_delete" = false ];then
@@ -165,17 +184,7 @@ confirm_paths
 perform_backup() {
     local source_dir="$1"
     local backup_dir="$2"
-    local folders_to_backup="$3"
-
-    if [ ! -d "$source_dir" ]; then
-        echo "The source directory '$source_dir' doesn't exist. Please verify the specified path."
-        exit 1
-    fi
-
-    if [ ! -d "$backup_dir" ]; then
-        echo "The backup directory '$backup_dir' doesn't exist. Please verify the specified path."
-        exit 1
-    fi
+    local drive_num="$3"
 
     rsync_options="-avz"
     if [ "$no_delete" = false ]; then
@@ -185,22 +194,46 @@ perform_backup() {
         rsync_options="$rsync_options --progress"
     fi
 
-    for folder in $folders_to_backup; do
-        if [ ! -d "$source_dir/$folder" ]; then
-            echo "The directory '$source_dir/$folder' doesn't exist. Please verify the specified path."
+    folder_count=$(yq e ".backup_drive_${drive_num}.folders | length" "$config_file")
+    
+    for ((i=0; i<folder_count; i++)); do
+        folder_path=$(yq e ".backup_drive_${drive_num}.folders[$i].path" "$config_file")
+        
+        if [ ! -d "$source_dir/$folder_path" ]; then
+            echo "The directory '$source_dir/$folder_path' doesn't exist. Please verify the specified path."
             continue
         fi
 
-        echo "Synchronizing files from '$source_dir/$folder' to '$backup_dir/$folder'"
-        rsync $rsync_options "$source_dir/$folder" "$backup_dir/"
+        if yq e ".backup_drive_${drive_num}.folders[$i].subfolders" "$config_file" &> /dev/null && \
+           [ "$(yq e ".backup_drive_${drive_num}.folders[$i].subfolders | length" "$config_file")" -gt 0 ]; then
+            
+            subfolder_count=$(yq e ".backup_drive_${drive_num}.folders[$i].subfolders | length" "$config_file")
+            
+            for ((j=0; j<subfolder_count; j++)); do
+                subfolder=$(yq e ".backup_drive_${drive_num}.folders[$i].subfolders[$j]" "$config_file")
+                
+                if [ ! -d "$source_dir/$folder_path/$subfolder" ]; then
+                    echo "The directory '$source_dir/$folder_path/$subfolder' doesn't exist. Please verify the specified path."
+                    continue
+                fi
+
+                mkdir -p "$backup_dir/$folder_path"
+                
+                echo "Synchronizing files from '$source_dir/$folder_path/$subfolder' to '$backup_dir/$folder_path/$subfolder'"
+                rsync $rsync_options "$source_dir/$folder_path/$subfolder/" "$backup_dir/$folder_path/$subfolder/"
+            done
+        else
+            echo "Synchronizing files from '$source_dir/$folder_path' to '$backup_dir/$folder_path'"
+            rsync $rsync_options "$source_dir/$folder_path/" "$backup_dir/$folder_path/"
+        fi
     done
 }
 
 if [ "$drive" = "1" ] || [ "$drive" = "both" ]; then
-    perform_backup "$source_dir" "$backup_dir1" "$folders_to_backup1"
+    perform_backup "$source_dir" "$backup_dir1" "1"
 fi
 if [ "$drive" = "2" ] || [ "$drive" = "both" ]; then
-    perform_backup "$source_dir" "$backup_dir2" "$folders_to_backup2"
+    perform_backup "$source_dir" "$backup_dir2" "2"
 fi
 
 echo "Backup completed on the secondary drives."

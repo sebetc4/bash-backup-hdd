@@ -1,0 +1,17 @@
+source:
+    dir: ./tests/Source
+backup_drive_1:
+    dir: ./tests/Backup-1
+    folders:
+        - path: dir3
+          subfolders:
+              - dir3b
+              - dir3c
+backup_drive_2:
+    dir: ./tests/Backup-2
+    folders:
+        - path: dir1
+        - path: dir2
+        - path: dir3
+          subfolders:
+              - dir3a

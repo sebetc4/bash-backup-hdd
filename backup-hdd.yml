@@ -3,9 +3,15 @@ source:
 backup_drive_1:
     dir: path_to_backup_drive_1
     folders:
-        - directory1
+        - path: directory1
+        - path: directory2
+          subfolders:
+              - subfolder-2-1
 backup_drive_2:
     dir: path_to_backup_drive_2
     folders:
-        - directory2
-        - directory3
+        - path: directory2
+          subfolders:
+              - subfolder-2-2
+              - subfolder-2-3
+        - path: directory3
