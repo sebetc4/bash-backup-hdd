@@ -1,0 +1,14 @@
+source:
+  dir: /mnt/code/Bash/backup-hdd/simple-backup/tests/source
+
+backup_drive_1:
+  dir: /mnt/code/Bash/backup-hdd/simple-backup/tests/backup1
+  folders:
+    - path: dir1
+    - path: dir3
+
+backup_drive_2:
+  dir: /mnt/code/Bash/backup-hdd/simple-backup/tests/backup2
+  folders:
+    - path: dir2
+    - path: dir3

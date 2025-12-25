@@ -1,14 +1,18 @@
 source:
-    dir: path_to_source_drive
+    dir: /mnt/main-5tb
+
 backup_drive_1:
-    dir: path_to_backup_drive_1
+    dir: /mnt/backup1
+    luks_device: /dev/sda1
     folders:
         - path: directory1
         - path: directory2
           subfolders:
               - subfolder-2-1
+
 backup_drive_2:
-    dir: path_to_backup_drive_2
+    dir: /mnt/backup2
+    luks_device: /dev/sdb1
     folders:
         - path: directory2
           subfolders:
