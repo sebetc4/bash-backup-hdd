@@ -61,16 +61,16 @@ ${COLOR_GREEN}Options:${COLOR_NC}
     -d, --drive <drive>      Drive to backup: 1, 2, both (default: both)
     --no-delete              Don't delete files in destination not in source
     --no-progress            Don't show progress during file transfer
-    --no-mount               Skip automatic mounting/unmounting (manual mode)
+    --mount                  Enable automatic LUKS mounting/unmounting
     --scrub                  Run BTRFS scrub after backup (integrity check)
     --compression-stats      Show compression statistics for BTRFS filesystems
     -h, --help               Display this help message
 
 ${COLOR_GREEN}Examples:${COLOR_NC}
-    $SCRIPT_NAME                          # Backup to both drives
+    $SCRIPT_NAME                          # Backup to both drives (manual mode)
     $SCRIPT_NAME -d 1                     # Backup to drive 1 only
     $SCRIPT_NAME --scrub --compression-stats
-    $SCRIPT_NAME --no-mount               # Manual mounting mode
+    $SCRIPT_NAME --mount                  # Enable automatic LUKS mounting
 
 ${COLOR_GREEN}Drive Requirements:${COLOR_NC}
     - When using -d both: ${COLOR_YELLOW}Both drives must be available${COLOR_NC}
@@ -202,22 +202,84 @@ check_disk_space() {
     local source_dir="$1"
     local dest_dir="$2"
     local drive_name="$3"
+    local drive_number="$4"
+    local config_file="$5"
+    local no_delete="$6"
 
     if [ ! -d "$dest_dir" ]; then
         return 0
     fi
 
-    # Get source size in KB
-    local source_size
-    source_size=$(du -sk "$source_dir" 2>/dev/null | awk '{print $1}')
+    # Calculate the size of folders that will be backed up to this specific drive
+    local source_size=0
+    local folder_count
+    folder_count=$(yq eval ".backup_drive_${drive_number}.folders | length" "$config_file")
+
+    for ((i = 0; i < folder_count; i++)); do
+        local folder_path
+        folder_path=$(yq eval ".backup_drive_${drive_number}.folders[$i].path" "$config_file")
+
+        local subfolder_count
+        subfolder_count=$(yq eval ".backup_drive_${drive_number}.folders[$i].subfolders | length" "$config_file")
+
+        if [ "$subfolder_count" = "0" ] || [ "$subfolder_count" = "null" ]; then
+            # Backup entire folder
+            local folder_size
+            folder_size=$(du -sk "$source_dir/$folder_path" 2>/dev/null | awk '{print $1}')
+            source_size=$((source_size + folder_size))
+        else
+            # Backup only specific subfolders
+            for ((j = 0; j < subfolder_count; j++)); do
+                local subfolder
+                subfolder=$(yq eval ".backup_drive_${drive_number}.folders[$i].subfolders[$j]" "$config_file")
+
+                local subfolder_size
+                subfolder_size=$(du -sk "$source_dir/$folder_path/$subfolder" 2>/dev/null | awk '{print $1}')
+                source_size=$((source_size + subfolder_size))
+            done
+        fi
+    done
 
     # Get available space on destination in KB
     local dest_available
     dest_available=$(df -k "$dest_dir" | tail -1 | awk '{print $4}')
 
-    # Add 10% margin for safety
-    local required_space=$((source_size + source_size / 10))
+    # Calculate required space based on delete mode
+    local required_space
+    if [ "$no_delete" = "true" ]; then
+        # Without --delete: we need space for source + existing unique files
+        # We can't predict exactly, so we calculate the delta (new/modified files)
+        # For safety, we check if we have at least space for the source size
+        # This is conservative but prevents running out of space during sync
+        required_space=$((source_size + source_size / 10))
+    else
+        # With --delete (default): destination will mirror source
+        # Maximum space needed is source size + 10% margin
+        # Old files will be deleted, so we only need space for the final state
+        required_space=$((source_size + source_size / 10))
 
+        # Additional check: ensure the destination can hold the source
+        # This is the actual maximum space we'll use after sync completes
+        local dest_total
+        dest_total=$(df -k "$dest_dir" | tail -1 | awk '{print $2}')
+
+        if [ "$dest_total" -lt "$required_space" ]; then
+            log_error "$drive_name: Destination filesystem too small"
+            echo "  Source size: ~$(numfmt --to=iec-i --suffix=B $((source_size * 1024)) 2>/dev/null || echo "${source_size}KB")"
+            echo "  Destination total: $(numfmt --to=iec-i --suffix=B $((dest_total * 1024)) 2>/dev/null || echo "${dest_total}KB")"
+            return 1
+        fi
+
+        # In delete mode, we only need to check if destination filesystem is large enough
+        # Available space is less relevant since files will be deleted during sync
+        log_info "$drive_name: Sufficient disk space available"
+        echo "  Source size: ~$(numfmt --to=iec-i --suffix=B $((source_size * 1024)) 2>/dev/null || echo "${source_size}KB")"
+        echo "  Destination total: $(numfmt --to=iec-i --suffix=B $((dest_total * 1024)) 2>/dev/null || echo "${dest_total}KB")"
+        echo "  Destination available: $(numfmt --to=iec-i --suffix=B $((dest_available * 1024)) 2>/dev/null || echo "${dest_available}KB")"
+        return 0
+    fi
+
+    # For --no-delete mode: check available space
     if [ "$dest_available" -lt "$required_space" ]; then
         log_error "$drive_name: Insufficient disk space"
         echo "  Required: ~$(numfmt --to=iec-i --suffix=B $((required_space * 1024)) 2>/dev/null || echo "${required_space}KB")"
@@ -245,15 +307,42 @@ get_filesystem_type() {
     df -T "$path" 2>/dev/null | tail -1 | awk '{print $2}'
 }
 
+verify_btrfs_compression() {
+    local path="$1"
+    local name="$2"
+    local expected_level="$3"
+
+    if ! is_btrfs "$path"; then
+        return 0
+    fi
+
+    # Get mount options to check compression
+    local mount_opts
+    mount_opts=$(mount | grep " $path " | sed 's/.*(\(.*\))/\1/')
+
+    if echo "$mount_opts" | grep -q "compress=zstd:${expected_level}"; then
+        log_info "$name: Mounted with correct compression (zstd:${expected_level})"
+        return 0
+    elif echo "$mount_opts" | grep -q "compress="; then
+        local current_compress
+        current_compress=$(echo "$mount_opts" | grep -o 'compress=[^,]*' || echo "unknown")
+        log_warn "$name: Mounted with different compression: $current_compress (expected: zstd:${expected_level})"
+        return 1
+    else
+        log_warn "$name: No compression detected (expected: zstd:${expected_level})"
+        return 1
+    fi
+}
+
 run_btrfs_scrub() {
     local path="$1"
     local name="$2"
-    
+
     if ! is_btrfs "$path"; then
         log_warn "$name is not on BTRFS filesystem. Skipping scrub."
         return 0
     fi
-    
+
     echo "Running BTRFS scrub on $name (this may take a while)..."
     if sudo btrfs scrub start -B "$path"; then
         log_info "Scrub completed successfully on $name"
@@ -298,13 +387,14 @@ mount_luks_drive() {
     local mapper_name="$2"
     local mount_point="$3"
     local label="$4"
-    
+    local compression_level="${5:-9}"  # Default to level 9 if not specified
+
     # Check if device exists
     if [ ! -b "$device" ]; then
         log_warn "$label: Device $device not found (drive not plugged in)"
         return 1
     fi
-    
+
     # Unlock LUKS if not already unlocked
     if [ ! -b "/dev/mapper/$mapper_name" ]; then
         echo "🔓 Unlocking $label ($device)..."
@@ -315,14 +405,14 @@ mount_luks_drive() {
     else
         log_info "$label already unlocked"
     fi
-    
+
     # Create mount point if needed
     sudo mkdir -p "$mount_point"
-    
+
     # Mount if not already mounted
     if ! mountpoint -q "$mount_point" 2>/dev/null; then
-        echo "📁 Mounting $label with BTRFS compression (zstd:9)..."
-        if sudo mount -o compress=zstd:9,noatime "/dev/mapper/$mapper_name" "$mount_point"; then
+        echo "📁 Mounting $label with BTRFS compression (zstd:${compression_level})..."
+        if sudo mount -o compress=zstd:${compression_level},noatime "/dev/mapper/$mapper_name" "$mount_point"; then
             log_info "$label mounted at $mount_point"
             MOUNTED_DRIVES+=("$mapper_name:$mount_point:$label")
             return 0
@@ -333,6 +423,14 @@ mount_luks_drive() {
         fi
     else
         log_info "$label already mounted at $mount_point"
+        # Verify compression level if already mounted
+        if is_btrfs "$mount_point"; then
+            local current_compress
+            current_compress=$(sudo btrfs property get "$mount_point" compression 2>/dev/null || echo "")
+            if [ -n "$current_compress" ] && [ "$current_compress" != "compress=zstd:${compression_level}" ]; then
+                log_warn "$label: Mounted with different compression: $current_compress (expected: zstd:${compression_level})"
+            fi
+        fi
         return 0
     fi
 }
@@ -580,7 +678,7 @@ main() {
     local drive="both"
     local no_delete=false
     local no_progress=false
-    local auto_mount=true
+    local auto_mount=false
     local run_scrub=false
     local show_compression=false
     
@@ -603,8 +701,8 @@ main() {
                 no_progress=true
                 shift
                 ;;
-            --no-mount)
-                auto_mount=false
+            --mount)
+                auto_mount=true
                 shift
                 ;;
             --scrub)
@@ -641,12 +739,19 @@ main() {
     
     # Read configuration
     local source_dir backup_dir1 backup_dir2 luks_device1 luks_device2
+    local compression_level1 compression_level2
 
     source_dir=$(yq e '.source.dir' "$config_file")
     backup_dir1=$(yq e '.backup_drive_1.dir' "$config_file")
     backup_dir2=$(yq e '.backup_drive_2.dir' "$config_file")
     luks_device1=$(yq e '.backup_drive_1.luks_device' "$config_file")
     luks_device2=$(yq e '.backup_drive_2.luks_device' "$config_file")
+
+    # Read compression levels (default to 9 if not specified)
+    compression_level1=$(yq e '.backup_drive_1.compression_level' "$config_file")
+    compression_level2=$(yq e '.backup_drive_2.compression_level' "$config_file")
+    [ "$compression_level1" = "null" ] && compression_level1=9
+    [ "$compression_level2" = "null" ] && compression_level2=9
     
     # Validate source path
     validate_path "$source_dir" "Source drive"
@@ -675,7 +780,7 @@ main() {
         local mount_failed=false
         
         if [ "$drive" = "1" ] || [ "$drive" = "both" ]; then
-            if ! mount_luks_drive "$luks_device1" "$LUKS_MAPPER1" "$backup_dir1" "Backup Drive 1"; then
+            if ! mount_luks_drive "$luks_device1" "$LUKS_MAPPER1" "$backup_dir1" "Backup Drive 1" "$compression_level1"; then
                 mount_failed=true
                 if [ "$drive" = "both" ]; then
                     log_error "Failed to mount Backup Drive 1 (required for 'both' mode)"
@@ -684,9 +789,9 @@ main() {
                 fi
             fi
         fi
-        
+
         if [ "$drive" = "2" ] || [ "$drive" = "both" ]; then
-            if ! mount_luks_drive "$luks_device2" "$LUKS_MAPPER2" "$backup_dir2" "Backup Drive 2"; then
+            if ! mount_luks_drive "$luks_device2" "$LUKS_MAPPER2" "$backup_dir2" "Backup Drive 2" "$compression_level2"; then
                 mount_failed=true
                 if [ "$drive" = "both" ]; then
                     log_error "Failed to mount Backup Drive 2 (required for 'both' mode)"
@@ -715,32 +820,52 @@ main() {
             exit 1
         fi
     fi
-    
+
     if [ "$drive" = "2" ] || [ "$drive" = "both" ]; then
         if [ ! -d "$backup_dir2" ]; then
             log_error "Backup drive 2 is not mounted or directory doesn't exist: $backup_dir2"
             exit 1
         fi
     fi
-    
-    # Display configuration and confirm
+
+    # Verify BTRFS compression settings
+    log_section "Verifying BTRFS Compression"
+
+    if [ "$drive" = "1" ] || [ "$drive" = "both" ]; then
+        verify_btrfs_compression "$backup_dir1" "Backup Drive 1" "$compression_level1"
+    fi
+
+    if [ "$drive" = "2" ] || [ "$drive" = "both" ]; then
+        verify_btrfs_compression "$backup_dir2" "Backup Drive 2" "$compression_level2"
+    fi
+
+    echo ""
+
+    # Display configuration
     print_configuration_summary "$source_dir" "$backup_dir1" "$backup_dir2" \
         "$luks_device1" "$luks_device2" "$drive" "$config_file" \
         "$no_delete" "$run_scrub"
 
-    # Check disk space before proceeding
+    # Confirm configuration first
+    echo ""
+    if ! confirm_execution "Do you confirm the above configuration?"; then
+        log_warn "Backup cancelled by user"
+        exit 0
+    fi
+
+    # Check disk space after configuration confirmation
     log_section "Checking Disk Space"
 
     local space_check_failed=false
 
     if [ "$drive" = "1" ] || [ "$drive" = "both" ]; then
-        if ! check_disk_space "$source_dir" "$backup_dir1" "Backup Drive 1"; then
+        if ! check_disk_space "$source_dir" "$backup_dir1" "Backup Drive 1" "1" "$config_file" "$no_delete"; then
             space_check_failed=true
         fi
     fi
 
     if [ "$drive" = "2" ] || [ "$drive" = "both" ]; then
-        if ! check_disk_space "$source_dir" "$backup_dir2" "Backup Drive 2"; then
+        if ! check_disk_space "$source_dir" "$backup_dir2" "Backup Drive 2" "2" "$config_file" "$no_delete"; then
             space_check_failed=true
         fi
     fi
@@ -751,12 +876,6 @@ main() {
             log_warn "Backup cancelled due to insufficient disk space"
             exit 1
         fi
-    fi
-
-    echo ""
-    if ! confirm_execution "Do you confirm the above configuration?"; then
-        log_warn "Backup cancelled by user"
-        exit 0
     fi
     
     # Prepare rsync options as array

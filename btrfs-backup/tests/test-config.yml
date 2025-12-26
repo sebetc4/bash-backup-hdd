@@ -4,6 +4,7 @@ source:
 backup_drive_1:
   dir: /mnt/code/Bash/backup-hdd/btrfs-backup/tests/backup1
   luks_device: /dev/null  # Simulated device for testing (no actual LUKS)
+  compression_level: 9  # BTRFS zstd compression level (1-15, default: 3)
   folders:
     - path: Documents
       subfolders:
@@ -13,6 +14,7 @@ backup_drive_1:
 backup_drive_2:
   dir: /mnt/code/Bash/backup-hdd/btrfs-backup/tests/backup2
   luks_device: /dev/null  # Simulated device for testing (no actual LUKS)
+  compression_level: 9  # BTRFS zstd compression level (1-15, default: 3)
   folders:
     - path: Documents
     - path: Music

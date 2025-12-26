@@ -17,7 +17,8 @@ Advanced backup script with LUKS encryption support, BTRFS compression and integ
 
 ## Features
 
-- ✅ Automatic mounting/unmounting of LUKS encrypted volumes
+- ✅ Optional automatic mounting/unmounting of LUKS encrypted volumes
+- ✅ Manual mode by default (safer)
 - ✅ BTRFS compression (zstd:9)
 - ✅ Integrity verification with BTRFS scrub
 - ✅ Compression statistics
@@ -46,7 +47,7 @@ Advanced backup script with LUKS encryption support, BTRFS compression and integ
 - `-d, --drive <drive>` - Drive to backup: 1, 2, both (default: both)
 - `--no-delete` - Don't delete files in destination not in source
 - `--no-progress` - Don't show progress during file transfer
-- `--no-mount` - Manual mode (skip automatic mounting/unmounting)
+- `--mount` - Enable automatic LUKS mounting/unmounting (requires sudo)
 - `--scrub` - Run BTRFS scrub after backup (integrity check)
 - `--compression-stats` - Show compression statistics for BTRFS filesystems
 - `-h, --help` - Display help message
@@ -55,14 +56,14 @@ Advanced backup script with LUKS encryption support, BTRFS compression and integ
 
 **Production:**
 ```bash
-# Full backup with integrity check
-sudo ./backup-hdd-btrfs.sh --scrub --compression-stats
+# Manual mode (default - volumes already mounted)
+./backup-hdd-btrfs.sh
 
-# Backup to drive 1 only
-sudo ./backup-hdd-btrfs.sh -d 1
+# Automatic LUKS mode with integrity check
+sudo ./backup-hdd-btrfs.sh --mount --scrub --compression-stats
 
-# Manual mode (volumes already mounted)
-./backup-hdd-btrfs.sh --no-mount
+# Backup to drive 1 only with automatic mounting
+sudo ./backup-hdd-btrfs.sh --mount -d 1
 ```
 
 **Testing:**
@@ -81,9 +82,11 @@ sudo ./backup-hdd-btrfs.sh -d 1
 
 The YAML configuration file defines:
 - Source directory
-- LUKS devices (required in production mode)
+- LUKS devices (only required when using `--mount` option)
 - Destination directories
 - Folders and subfolders to backup
+
+**Note:** In manual mode (default), LUKS devices are not used. The script assumes volumes are already mounted.
 
 ### Setup
 
@@ -106,6 +109,7 @@ source:
 backup_drive_1:
   dir: /mnt/backup1
   luks_device: /dev/sda1
+  compression_level: 9  # BTRFS zstd compression level (1-15, recommended: 9)
   folders:
     - path: Documents
       subfolders:
@@ -115,11 +119,20 @@ backup_drive_1:
 backup_drive_2:
   dir: /mnt/backup2
   luks_device: /dev/sdb1
+  compression_level: 9  # BTRFS zstd compression level (1-15, recommended: 9)
   folders:
     - path: Documents
     - path: Music
     - path: Videos
 ```
+
+**Configuration options:**
+- `luks_device`: LUKS encrypted partition (only required with `--mount` option)
+- `compression_level`: BTRFS zstd compression level (1-15, default: 9)
+  - Lower values (1-3): Faster, less compression
+  - Higher values (9-15): Slower, better compression
+  - Recommended: 9 (good balance)
+- `folders`: Directories to backup (with optional subfolders)
 
 ## Requirements
 

@@ -161,7 +161,6 @@ run_backup() {
 
     "$BACKUP_SCRIPT" \
         --config "$TEST_CONFIG" \
-        --no-mount \
         --no-progress \
         -d "$drive" \
         $extra_args \
