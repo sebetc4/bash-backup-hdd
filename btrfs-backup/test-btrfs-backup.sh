@@ -159,12 +159,13 @@ run_backup() {
     local drive="$1"
     local extra_args="${2:-}"
 
+    # Answer: Y (confirm config), N (skip space check)
     "$BACKUP_SCRIPT" \
         --config "$TEST_CONFIG" \
         --no-progress \
         -d "$drive" \
         $extra_args \
-        <<< "Y" 2>&1 | grep -v "^sending\|^sent\|^total size"
+        <<< $'Y\nN' 2>&1 | grep -v "^sending\|^sent\|^total size"
 }
 
 count_files() {

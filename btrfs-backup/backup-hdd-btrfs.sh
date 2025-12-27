@@ -853,29 +853,34 @@ main() {
         exit 0
     fi
 
-    # Check disk space after configuration confirmation
-    log_section "Checking Disk Space"
+    # Ask if user wants to check disk space
+    echo ""
+    if confirm_execution "Do you want to check available disk space before backup?"; then
+        log_section "Checking Disk Space"
 
-    local space_check_failed=false
+        local space_check_failed=false
 
-    if [ "$drive" = "1" ] || [ "$drive" = "both" ]; then
-        if ! check_disk_space "$source_dir" "$backup_dir1" "Backup Drive 1" "1" "$config_file" "$no_delete"; then
-            space_check_failed=true
+        if [ "$drive" = "1" ] || [ "$drive" = "both" ]; then
+            if ! check_disk_space "$source_dir" "$backup_dir1" "Backup Drive 1" "1" "$config_file" "$no_delete"; then
+                space_check_failed=true
+            fi
         fi
-    fi
 
-    if [ "$drive" = "2" ] || [ "$drive" = "both" ]; then
-        if ! check_disk_space "$source_dir" "$backup_dir2" "Backup Drive 2" "2" "$config_file" "$no_delete"; then
-            space_check_failed=true
+        if [ "$drive" = "2" ] || [ "$drive" = "both" ]; then
+            if ! check_disk_space "$source_dir" "$backup_dir2" "Backup Drive 2" "2" "$config_file" "$no_delete"; then
+                space_check_failed=true
+            fi
         fi
-    fi
 
-    if [ "$space_check_failed" = true ]; then
-        log_error "Insufficient disk space on one or more backup drives"
-        if ! confirm_execution "Do you want to proceed anyway?"; then
-            log_warn "Backup cancelled due to insufficient disk space"
-            exit 1
+        if [ "$space_check_failed" = true ]; then
+            log_error "Insufficient disk space on one or more backup drives"
+            if ! confirm_execution "Do you want to proceed anyway?"; then
+                log_warn "Backup cancelled due to insufficient disk space"
+                exit 1
+            fi
         fi
+    else
+        log_info "Skipping disk space check"
     fi
     
     # Prepare rsync options as array
